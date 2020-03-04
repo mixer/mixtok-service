@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.Storage;
 using Microsoft.Azure.Storage.Blob;
+using MixTok.Core.Models;
 using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
@@ -20,11 +21,11 @@ namespace MixTok.Core
         public void AttemptToRestore(ClipMine adder, int currentDbVersion)
         {
             adder.SetStatus("Attempting to restore from historian...");
-            DateTime start = DateTime.Now;
+            var start = DateTimeOffset.Now;
             try
             {
                 // Look for a history file
-                CloudBlockBlob cloudBlockBlob = GetHistoryFile();
+                var cloudBlockBlob = GetHistoryFile();
                 if(cloudBlockBlob == null)
                 {
                     adder.SetStatus("Failed to get history file...");
@@ -41,7 +42,7 @@ namespace MixTok.Core
                 adder.SetStatus("Found history, downloading...");
 
                 // Download and deseralize.
-                HistorianBackup backup = null;
+                var backup = default(HistorianBackup);
                 using (var stream = new MemoryStream())
                 {
                     cloudBlockBlob.DownloadToStream(stream);
@@ -71,7 +72,7 @@ namespace MixTok.Core
                 adder.SetStatus("History is good, restoring...");
 
                 // Push the database in!
-                adder.AddToClipMine(backup.database, (DateTime.Now - start), true);
+                adder.AddToClipMine(backup.database, (DateTimeOffset.Now - start), true);
             }
             catch(Exception e)
             {
@@ -79,29 +80,29 @@ namespace MixTok.Core
             }
         }
 
-        public void BackupCurrentDb(Dictionary<string, MixerClip> db, ClipMine adder, int currentDbVersion)
+        public void BackupCurrentDb(IDictionary<string, MixerClip> db, ClipMine adder, int currentDbVersion)
         {
             adder.SetStatus("Backing up to historian...");
 
             try
             {
                 // Convert the current map to a list.
-                List<MixerClip> clips = new List<MixerClip>();
+                var clips = new List<MixerClip>();
                 foreach(KeyValuePair<string, MixerClip> k in db)
                 {
                     clips.Add(k.Value);
                 }
 
                 // Seralize our current database.
-                HistorianBackup backup = new HistorianBackup()
+                var backup = new HistorianBackup()
                 {
                     database = clips,
                     Version = currentDbVersion
                 };
-                string json = JsonConvert.SerializeObject(backup);
+                var json = JsonConvert.SerializeObject(backup);
 
                 // Try to get the history file
-                CloudBlockBlob blob = GetHistoryFile();
+                var blob = GetHistoryFile();
                 if(blob == null)
                 {
                     Logger.Info("Failed to get history blob.");
@@ -119,15 +120,15 @@ namespace MixTok.Core
 
         private CloudBlockBlob GetHistoryFile()
         {
-            string storageConnectionString = Environment.GetEnvironmentVariable("blobstorageconnectionstring");
-            if (String.IsNullOrWhiteSpace(storageConnectionString))
+            var storageConnectionString = Environment.GetEnvironmentVariable("blobstorageconnectionstring");
+            if (string.IsNullOrWhiteSpace(storageConnectionString))
             {
                 Logger.Info("No blob storage connection found, not attempting a restore.");
                 return null;
             }
 
             // Try to parse the details.
-            CloudStorageAccount storageAccount = null;
+            var storageAccount = default(CloudStorageAccount);
             if (!CloudStorageAccount.TryParse(storageConnectionString, out storageAccount))
             {
                 Logger.Info("Failed blob storage connection string.");
@@ -135,8 +136,8 @@ namespace MixTok.Core
             }
 
             // Get the container
-            CloudBlobClient cloudBlobClient = storageAccount.CreateCloudBlobClient();
-            CloudBlobContainer cloudBlobContainer = cloudBlobClient.GetContainerReference("history");
+            var cloudBlobClient = storageAccount.CreateCloudBlobClient();
+            var cloudBlobContainer = cloudBlobClient.GetContainerReference("history");
             cloudBlobContainer.CreateIfNotExists();
 
             // Look for a history file

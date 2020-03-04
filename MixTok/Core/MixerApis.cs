@@ -1,5 +1,7 @@
-﻿using Newtonsoft.Json;
+﻿using MixTok.Core.Models;
+using Newtonsoft.Json;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -8,131 +10,39 @@ using System.Threading.Tasks;
 
 namespace MixTok.Core
 {
-    public class MixerSocail
-    {
-        public string Twitter;
-        public string Facebook;
-        public string Youtube;
-        public string Instagram;
-        public string Player;
-        public string Steam;
-        public string Soundcloud;
-        public string Patreon;
-    }
-
-    public class MixerUser
-    {
-        public MixerSocail Social;
-        public bool Verified;
-        public string Bio;
-
-        public void UpdateFromNewer(MixerUser fresh)
-        {
-            Verified = fresh.Verified;
-            Bio = fresh.Bio;
-        }
-    }
-
-    public class MixerChannel
-    {
-        public int Id;
-        public int ViewersCurrent;
-        public bool Online;
-        public bool Partnered;
-        public int UserId;
-        public string ChannelLogo;
-        public bool VodsEnabled;
-        public MixerUser User;
-
-        [JsonProperty("languageId")]
-        public string Language;
-
-        [JsonProperty("token")]
-        public string Name;
-
-        public void UpdateFromNewer(MixerChannel fresh)
-        {
-            ViewersCurrent = fresh.ViewersCurrent;
-            Online = fresh.Online;
-            Partnered = fresh.Partnered;
-            ChannelLogo = fresh.ChannelLogo;
-            VodsEnabled = fresh.VodsEnabled;
-            Language = fresh.Language;
-            Name = fresh.Name;            
-        }
-    }
-
-    public class ClipContent
-    { 
-        public string LocatorType;
-        public string Uri;
-    }
-
-    public class MixerClip
-    {
-        public string Title;
-        public double MixTokRank;
-        public int ViewCount;
-        public int TypeId;
-        public int HypeZoneChannelId;
-        public string ClipUrl;
-        public string ShareableUrl;
-        public string GameTitle;
-        public string ContentId;
-        public string ShareableId;
-        public int ContentMaturity;
-        public int DurationInSeconds;
-        public DateTime UploadDate;
-        public DateTime ExpirationDate;
-        public List<ClipContent> ContentLocators;
-        public MixerChannel Channel;
-        public List<string> Tags;
-
-        public void UpdateFromNewer(MixerClip fresh)
-        {
-            ViewCount = fresh.ViewCount;
-            Channel.UpdateFromNewer(fresh.Channel);
-        }
-    }
-
-    public class MixerType
-    {
-        public int Id;
-        public string Name;
-        public string Parent;
-    }
+    
 
     public class MixerApis
     {
-        static HttpClient s_client = new HttpClient();
-        static Dictionary<int, string> m_gameNameCache = new Dictionary<int, string>();
+        private static HttpClient _client = new HttpClient();
+        private static ConcurrentDictionary<int, string> _gameNameCache = new ConcurrentDictionary<int, string>();
 
         public static async Task<List<MixerChannel>> GetOnlineChannels(int viwersInclusiveLimit = 5, string languageFilter = null)
         {
-            List<MixerChannel> channels = new List<MixerChannel>();
+            var totalChannels = new List<MixerChannel>();
             int i = 0;
             while (i < 1000)
             {
                 try
                 {
-                    string response = await MakeMixerHttpRequest($"api/v1/channels?limit=100&page={i}&order=online:desc,viewersCurrent:desc&fields=token,id,viewersCurrent,online,userId,user,languageId,vodsEnabled,partnered");
-                    List<MixerChannel> chan = JsonConvert.DeserializeObject<List<MixerChannel>>(response);
-                    channels.AddRange(chan);
+                    var response = await MakeMixerHttpRequest($"api/v1/channels?limit=100&page={i}&order=online:desc,viewersCurrent:desc&fields=token,id,viewersCurrent,online,userId,user,languageId,vodsEnabled,partnered");
+                    var channels = JsonConvert.DeserializeObject<List<MixerChannel>>(response);
+                    totalChannels.AddRange(channels);
 
                     // Check if we hit the end.
-                    if (chan.Count == 0)
+                    if (channels.Count == 0)
                     {
                         break;
                     }
 
                     // Check if we are on channels that are under our viewer limit
-                    if (chan[0].ViewersCurrent < viwersInclusiveLimit)
+                    if (channels[0].ViewersCurrent < viwersInclusiveLimit)
                     {
                         break;
                     }
 
                     // Check if we hit the end of online channels.
-                    if (!chan[0].Online)
+                    if (!channels[0].Online)
                     {
                         break;
                     }
@@ -148,21 +58,21 @@ namespace MixTok.Core
                 i++;
             }
 
-            List<MixerChannel> final = new List<MixerChannel>();
-            foreach(var chan in channels)
+            var final = new List<MixerChannel>();
+            foreach (var channel in totalChannels)
             {
-                if(String.IsNullOrWhiteSpace(chan.Language))
+                if (string.IsNullOrWhiteSpace(channel.Language))
                 {
-                    chan.Language = "unknown";
+                    channel.Language = "unknown";
                 }
-                if(!String.IsNullOrWhiteSpace(languageFilter) && !chan.Language.Equals(languageFilter))
+                if (!string.IsNullOrWhiteSpace(languageFilter) && !channel.Language.Equals(languageFilter))
                 {
                     continue;
                 }
-                if(chan.Online)
+                if (channel.Online)
                 {
-                    chan.ChannelLogo = $"https://mixer.com/api/v1/users/{chan.UserId}/avatar";
-                    final.Add(chan);
+                    channel.ChannelLogo = $"https://mixer.com/api/v1/users/{channel.UserId}/avatar";
+                    final.Add(channel);
                 }
             }
             return final;
@@ -170,41 +80,41 @@ namespace MixTok.Core
 
         public static async Task<List<MixerClip>> GetClips(int channelId)
         {
-            string response = await MakeMixerHttpRequest($"api/v1/clips/channels/{channelId}");
-            List<MixerClip> list = JsonConvert.DeserializeObject<List<MixerClip>>(response);
+            var response = await MakeMixerHttpRequest($"api/v1/clips/channels/{channelId}");
+            var list = JsonConvert.DeserializeObject<List<MixerClip>>(response);
 
             // Add some meta data.
-            foreach (MixerClip c in list)
+            foreach (var mixerClip in list)
             {
                 // Add the game title
-                c.GameTitle = await GetGameName(c.TypeId);
+                mixerClip.GameTitle = await GetGameName(mixerClip.TypeId);
 
                 // Pull out the HLS url.
-                foreach (var con in c.ContentLocators)
+                foreach (var clipContent in mixerClip.ContentLocators)
                 {
-                    if (con.LocatorType.Equals("HlsStreaming"))
+                    if (clipContent.LocatorType.Equals("HlsStreaming"))
                     {
-                        c.ClipUrl = con.Uri;
+                        mixerClip.ClipUrl = clipContent.Uri;
                         break;
                     }
                 }
 
                 // Create the deep link url.
-                c.ShareableUrl = $"https://mixer.com/{channelId}?clip={c.ShareableId}";
+                mixerClip.ShareableUrl = $"https://mixer.com/{channelId}?clip={mixerClip.ShareableId}";
 
                 // Pull out the hypezone channel id if there is one.
-                c.HypeZoneChannelId = 0;
-                if (c.Tags != null && c.Tags.Count > 0)
+                mixerClip.HypeZoneChannelId = 0;
+                if (mixerClip.Tags != null && mixerClip.Tags.Count > 0)
                 {
-                    foreach(string s in c.Tags)
+                    foreach (string s in mixerClip.Tags)
                     {
-                        if(s.StartsWith("HZ-"))
+                        if (s.StartsWith("HZ-"))
                         {
                             int hypeChanId = 0;
                             string end = s.Substring(3);
-                            if(int.TryParse(end, out hypeChanId))
+                            if (int.TryParse(end, out hypeChanId))
                             {
-                                c.HypeZoneChannelId = hypeChanId;
+                                mixerClip.HypeZoneChannelId = hypeChanId;
                             }
                         }
                     }
@@ -216,25 +126,20 @@ namespace MixTok.Core
         public static async Task<string> GetGameName(int typeId)
         {
             // Check the cache
-            lock(m_gameNameCache)
+            if (_gameNameCache.TryGetValue(typeId, out var value))
             {
-                if(m_gameNameCache.ContainsKey(typeId))
-                {
-                    return m_gameNameCache[typeId];
-                }
+                return value;
             }
 
             try
             {
-                string response = await MakeMixerHttpRequest($"api/v1/types/{typeId}");
-                string name = JsonConvert.DeserializeObject<MixerType>(response).Name;
-                lock(m_gameNameCache)
-                {
-                    m_gameNameCache[typeId] = name;
-                }
+                var response = await MakeMixerHttpRequest($"api/v1/types/{typeId}");
+                var name = JsonConvert.DeserializeObject<MixerType>(response).Name;
+                
+                _gameNameCache.TryAdd(typeId, name);
                 return name;
             }
-            catch(Exception e)
+            catch (Exception e)
             {
                 Logger.Error($"Failed to get game name for {typeId}: {e.Message}");
             }
@@ -246,7 +151,7 @@ namespace MixTok.Core
             try
             {
                 string response = await MakeMixerHttpRequest($"api/v1/channels/{channelName}");
-                return JsonConvert.DeserializeObject<MixerChannel>(response).Id;                
+                return JsonConvert.DeserializeObject<MixerChannel>(response).Id;
             }
             catch (Exception e)
             {
@@ -261,15 +166,15 @@ namespace MixTok.Core
             int i = 0;
             while (i < 1000)
             {
-                HttpRequestMessage request = new HttpRequestMessage();
+                var request = new HttpRequestMessage();
                 request.RequestUri = new Uri($"https://mixer.com/{url}");
 
-                HttpResponseMessage response = await s_client.SendAsync(request);
+                var response = await _client.SendAsync(request);
                 if (response.StatusCode == (HttpStatusCode)429)
                 {
                     // If we get rate limited wait for a while.
                     int backoffMs = 500 * (int)Math.Pow(rateLimitBackoff, 2);
-                    Logger.Info($"URL backing off for {backoffMs}ms, URL:{url}");
+                    Logger.Info($"[Request Throttled] URL backing off for {backoffMs}ms, URL:{url}");
                     rateLimitBackoff++;
                     await Task.Delay(backoffMs);
 
@@ -282,7 +187,7 @@ namespace MixTok.Core
                 }
                 return await response.Content.ReadAsStringAsync();
             }
-            return String.Empty;
+            return string.Empty;
         }
     }
 }

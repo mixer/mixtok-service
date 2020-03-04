@@ -1,8 +1,8 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
-using System.Threading.Tasks;
+using MixTok.Core.Models;
 
 namespace MixTok.Core
 {
@@ -24,52 +24,52 @@ namespace MixTok.Core
         // If anything in any of the objects change, this should be updated.
         const int c_databaseVersion = 1;
 
-        Historian m_historian;
-        ClipCrawler m_crawler;
-        ReaderWriterLockSlim m_clipMineLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
-        Dictionary<string, MixerClip> m_clipMine = new Dictionary<string, MixerClip>();
-        object m_viewCountSortedLock = new object(); // We use these lock objects since we swap the list obejcts.
-        object m_mixTockSortedLock = new object();
-        object m_mostRecentSortedLock = new object();
-        LinkedList<MixerClip> m_viewCountSortedList = new LinkedList<MixerClip>();
-        LinkedList<MixerClip> m_mixTockSortedList = new LinkedList<MixerClip>();
-        LinkedList<MixerClip> m_mostRecentList = new LinkedList<MixerClip>();
-        DateTime m_lastUpdateTime = DateTime.Now;
-        TimeSpan m_lastUpdateDuration = new TimeSpan(0);
-        DateTime m_lastDatabaseBackup = DateTime.MinValue;
-        string m_status;
-        TimeSpan m_statusDuration = new TimeSpan(0);
-        DateTime m_statusDurationSet = DateTime.MinValue;
+        private Historian _historian;
+        private ClipCrawler _crawler;
+        private ReaderWriterLockSlim _clipMineLock = new ReaderWriterLockSlim(LockRecursionPolicy.SupportsRecursion);
+        private readonly ConcurrentDictionary<string, MixerClip> _clipMine = new ConcurrentDictionary<string, MixerClip>();
+        private readonly object _viewCountSortedLock = new object(); // We use these lock objects since we swap the list obejcts.
+        private readonly object _mixTockSortedLock = new object();
+        private readonly object _mostRecentSortedLock = new object();
+        private LinkedList<MixerClip> _viewCountSortedList = new LinkedList<MixerClip>();
+        private LinkedList<MixerClip> _mixTockSortedList = new LinkedList<MixerClip>();
+        private LinkedList<MixerClip> _mostRecentList = new LinkedList<MixerClip>();
+        private DateTimeOffset _lastUpdateTime = DateTimeOffset.Now;
+        private TimeSpan _lastUpdateDuration = new TimeSpan(0);
+        private DateTimeOffset _lastDatabaseBackup = DateTimeOffset.MinValue;
+        private string _status;
+        private TimeSpan _statusDuration = new TimeSpan(0);
+        private DateTimeOffset _statusDurationSet = DateTimeOffset.MinValue;
 
         public ClipMine()
         {
-            m_historian = new Historian();
+            _historian = new Historian();
         }
 
         public void Start()
         {
             // Start a worker
-            Thread worker = new Thread(() =>
+            var worker = new Thread(() =>
             {
                 // Ask the historian to try to restore our in
                 // memory database from a previous database.
-                m_historian.AttemptToRestore(this, c_databaseVersion);
+                _historian.AttemptToRestore(this, c_databaseVersion);
 
                 // Now start the normal miner.
-                m_crawler = new ClipCrawler(this);
+                _crawler = new ClipCrawler(this);
             });
             worker.Start();
         }
 
         public void AddToClipMine(List<MixerClip> newClips, TimeSpan updateDuration, bool isRestore)
         {
-            DateTime start = DateTime.Now;
+            var start = DateTimeOffset.Now;
 
             SetStatus($"Indexing {newClips.Count} new clips...");
 
             {
                 // Lock the dictionary for writing so we make sure no one reads or writes while we are updating.
-                m_clipMineLock.EnterWriteLock();
+                _clipMineLock.EnterWriteLock();
 
                 // Set all channels to offline and remove old clips.
                 OfflineAndCleanUpClipMine();
@@ -77,36 +77,36 @@ namespace MixTok.Core
                 // Add all of the new clips.
                 AddOrUpdateClips(newClips);
 
-                m_clipMineLock.ExitWriteLock();
+                _clipMineLock.ExitWriteLock();
             }
 
             {
                 // The cooking operations are all ready-only, so use the read only lock.
-                m_clipMineLock.EnterReadLock();
+                _clipMineLock.EnterReadLock();
 
                 // Update
                 UpdateCookedData();
 
-                m_clipMineLock.ExitReadLock();
+                _clipMineLock.ExitReadLock();
             }
 
-            m_lastUpdateTime = DateTime.Now;
-            m_lastUpdateDuration = (m_lastUpdateTime - start) + updateDuration;
+            _lastUpdateTime = DateTimeOffset.Now;
+            _lastUpdateDuration = (_lastUpdateTime - start) + updateDuration;
 
             // Check if we should write our current database as a backup.
-            if(!isRestore && DateTime.Now - m_lastDatabaseBackup > new TimeSpan(0, 30, 0))
+            if (!isRestore && DateTimeOffset.Now - _lastDatabaseBackup > new TimeSpan(0, 30, 0))
             {
-                m_historian.BackupCurrentDb(m_clipMine, this, c_databaseVersion);
-                m_lastDatabaseBackup = DateTime.Now;
+                _historian.BackupCurrentDb(_clipMine, this, c_databaseVersion);
+                _lastDatabaseBackup = DateTimeOffset.Now;
             }
-                   
+
         }
 
         // Needs to be called under lock!
         private void OfflineAndCleanUpClipMine()
         {
-            List<string> toRemove = new List<string>();
-            foreach(KeyValuePair<string, MixerClip> p in m_clipMine)
+            var toRemove = new List<string>();
+            foreach (KeyValuePair<string, MixerClip> p in _clipMine)
             {
                 // Set the channel offline and the view count to 0.
                 // When the currently online channel are added these will be
@@ -115,16 +115,19 @@ namespace MixTok.Core
                 p.Value.Channel.ViewersCurrent = 0;
 
                 // If the clips is expired, remove it.
-                if(DateTime.UtcNow > p.Value.ExpirationDate)
+                if (DateTimeOffset.UtcNow > p.Value.ExpirationDate)
                 {
                     toRemove.Add(p.Key);
                 }
             }
 
             // Remove old clips
-            foreach(string s in toRemove)
+            foreach (string s in toRemove)
             {
-                m_clipMine.Remove(s);
+                if (!_clipMine.TryRemove(s, out var clip))
+                {
+                    Logger.Error($"Could not remove clip {s}");
+                }
             }
 
             Logger.Info($"Mine cleanup done, removed {toRemove.Count} old clips.");
@@ -135,29 +138,29 @@ namespace MixTok.Core
         {
             int added = 0;
             int updated = 0;
-            foreach(MixerClip c in freshClips)
+            foreach (MixerClip c in freshClips)
             {
-                if(m_clipMine.ContainsKey(c.ContentId))
+                if (_clipMine.TryGetValue(c.ContentId, out var clip))
                 {
                     // The clips already exists, update the clip and channel info
                     // from this newer data.
-                    m_clipMine[c.ContentId].UpdateFromNewer(c);
+                    clip.UpdateFromNewer(c);
                     updated++;
                 }
                 else
                 {
                     // The clip doesn't exist, add it.
-                    m_clipMine.Add(c.ContentId, c);
+                    _clipMine.TryAdd(c.ContentId, c);
                     added++;
                 }
             }
             Logger.Info($"Clip update done; {added} added, {updated} updated.");
         }
-         
+
         // Needs to be called under lock!
         private void UpdateCookedData()
         {
-            DateTime start = DateTime.Now;
+            var start = DateTimeOffset.Now;
             SetStatus($"Updating MixTok ranks...");
 
             // Update the mixtock rank on all the clips we know of.
@@ -166,34 +169,34 @@ namespace MixTok.Core
 
             // Update the view count sorted list.
             // First build a temp list outside of lock and then swap them.
-            LinkedList<MixerClip> temp = BuildList(m_clipMine, ClipMineSortTypes.ViewCount, "view count");
-            lock (m_viewCountSortedLock)
+            LinkedList<MixerClip> temp = BuildList(_clipMine, ClipMineSortTypes.ViewCount, "view count");
+            lock (_viewCountSortedLock)
             {
-                m_viewCountSortedList = temp;
+                _viewCountSortedList = temp;
             }
 
             // Update the mixtok sorted list.
-            temp = BuildList(m_clipMine, ClipMineSortTypes.MixTokRank, "Mixtok rank");
-            lock (m_mixTockSortedLock)
+            temp = BuildList(_clipMine, ClipMineSortTypes.MixTokRank, "Mixtok rank");
+            lock (_mixTockSortedLock)
             {
-                m_mixTockSortedList = temp;
-            }
-            
-            // Update the most recent list.
-            temp = BuildList(m_clipMine, ClipMineSortTypes.MostRecent, "most recent");
-            lock (m_mostRecentSortedLock)
-            {
-                m_mostRecentList = temp;
+                _mixTockSortedList = temp;
             }
 
-            SetStatus($"Cooking data done:  {Util.FormatTime(DateTime.Now - start)}", new TimeSpan(0, 0, 10));
-            Logger.Info($"Cooking data done: {DateTime.Now - start}");
+            // Update the most recent list.
+            temp = BuildList(_clipMine, ClipMineSortTypes.MostRecent, "most recent");
+            lock (_mostRecentSortedLock)
+            {
+                _mostRecentList = temp;
+            }
+
+            SetStatus($"Cooking data done:  {Util.FormatTime(DateTimeOffset.Now - start)}", new TimeSpan(0, 0, 10));
+            Logger.Info($"Cooking data done: {DateTimeOffset.Now - start}");
         }
 
-        private LinkedList<MixerClip> BuildList(Dictionary<string, MixerClip> db, ClipMineSortTypes type, string indexType)
+        private LinkedList<MixerClip> BuildList(ConcurrentDictionary<string, MixerClip> db, ClipMineSortTypes type, string indexType)
         {
             int count = 0;
-            LinkedList<MixerClip> tempList = new LinkedList<MixerClip>();
+            var tempList = new LinkedList<MixerClip>();
             foreach (KeyValuePair<string, MixerClip> p in db)
             {
                 InsertSort(ref tempList, p.Value, type);
@@ -212,11 +215,11 @@ namespace MixTok.Core
 
         private void InsertSort(ref LinkedList<MixerClip> list, MixerClip c, ClipMineSortTypes type)
         {
-            LinkedListNode<MixerClip> node = list.First;
-            while(node != null)
+            var node = list.First;
+            while (node != null)
             {
                 bool result = false;
-                switch(type)
+                switch (type)
                 {
                     case ClipMineSortTypes.MostRecent:
                         result = c.UploadDate > node.Value.UploadDate;
@@ -241,7 +244,7 @@ namespace MixTok.Core
 
         public List<MixerClip> GetClips(ClipMineSortTypes sortType,
             int limit = 100,
-            DateTime? fromTime = null, DateTime? toTime = null,    
+            DateTimeOffset? fromTime = null, DateTimeOffset? toTime = null,
             int? ViewCountMin = null,
             int? channelIdFilter = null, string channelName = null, int? hypeZoneChannelId = null,
             bool? currentlyLive = null, bool? partnered = null,
@@ -249,40 +252,41 @@ namespace MixTok.Core
             string languageFilter = null)
         {
             // Get the pre-sorted list we want.
-            LinkedList<MixerClip> list;
-            object lockObj;
-            switch(sortType)
+            var list = default(LinkedList<MixerClip>);
+            var lockList = new object();
+
+            switch (sortType)
             {
                 default:
                 case ClipMineSortTypes.ViewCount:
-                    list = m_viewCountSortedList;
-                    lockObj = m_viewCountSortedLock;
+                    list = _viewCountSortedList;
+                    lockList = _viewCountSortedLock;
                     break;
                 case ClipMineSortTypes.MixTokRank:
-                    list = m_mixTockSortedList;
-                    lockObj = m_mixTockSortedLock;
+                    list = _mixTockSortedList;
+                    lockList = _mixTockSortedLock;
                     break;
                 case ClipMineSortTypes.MostRecent:
-                    list = m_mostRecentList;
-                    lockObj = m_mostRecentSortedLock;
+                    list = _mostRecentList;
+                    lockList = _mostRecentSortedLock;
                     break;
             }
 
-            List<MixerClip> output = new List<MixerClip>();
+            var output = new List<MixerClip>();
             // Lock the list so it doesn't change while we are using it.
-            lock(lockObj)
+            lock (lockList)
             {
                 // Go through the current sorted list from the highest to the lowest.
                 // Apply the filtering and then build the output list.
-                LinkedListNode<MixerClip> node = list.First;
-                while(output.Count < limit && node != null)
+                var node = list.First;
+                while (output.Count < limit && node != null)
                 {
                     // Get the node and advance here, becasue this will continue early
                     // if the search filters it out.
-                    MixerClip c = node.Value;
+                    var c = node.Value;
                     node = node.Next;
 
-                    if(channelIdFilter.HasValue)
+                    if (channelIdFilter.HasValue)
                     {
                         // Check if this is the channel we want.
                         if (c.Channel.Id != channelIdFilter.Value)
@@ -290,33 +294,33 @@ namespace MixTok.Core
                             continue;
                         }
                     }
-                    if(!String.IsNullOrWhiteSpace(channelName))
+                    if (!string.IsNullOrWhiteSpace(channelName))
                     {
-                        // Check if the channel name has the current filter.
-                        if(c.Channel.Name.IndexOf(channelName, 0, StringComparison.InvariantCultureIgnoreCase) == -1)
+                        // Check if the channel name has the current filter.                        
+                        if (c.Channel.Name.IndexOf(channelName, 0, StringComparison.InvariantCultureIgnoreCase) == -1)
                         {
                             continue;
                         }
                     }
-                    if(!String.IsNullOrWhiteSpace(gameTitle))
+                    if (!string.IsNullOrWhiteSpace(gameTitle))
                     {
                         // Check if the game title has the current filter string.
-                        if(c.GameTitle.IndexOf(gameTitle, 0, StringComparison.InvariantCultureIgnoreCase) == -1)
-                        {
-                            continue;
-                        } 
-                    }
-                    if(gameId.HasValue)
-                    {
-                        if(c.TypeId != gameId)
+                        if (c.GameTitle.IndexOf(gameTitle, 0, StringComparison.InvariantCultureIgnoreCase) == -1)
                         {
                             continue;
                         }
                     }
-                    if(fromTime.HasValue)
+                    if (gameId.HasValue)
+                    {
+                        if (c.TypeId != gameId)
+                        {
+                            continue;
+                        }
+                    }
+                    if (fromTime.HasValue)
                     {
                         // Check if this is in the time range we want.
-                        if(c.UploadDate < fromTime.Value)
+                        if (c.UploadDate < fromTime.Value)
                         {
                             continue;
                         }
@@ -329,37 +333,37 @@ namespace MixTok.Core
                             continue;
                         }
                     }
-                    if(ViewCountMin.HasValue)
+                    if (ViewCountMin.HasValue)
                     {
-                        if(c.ViewCount < ViewCountMin)
+                        if (c.ViewCount < ViewCountMin)
                         {
                             continue;
                         }
                     }
-                    if(partnered.HasValue)
+                    if (partnered.HasValue)
                     {
-                        if(partnered.Value != c.Channel.Partnered)
+                        if (partnered.Value != c.Channel.Partnered)
                         {
                             continue;
                         }
                     }
-                    if(currentlyLive.HasValue)
+                    if (currentlyLive.HasValue)
                     {
-                        if(currentlyLive.Value != c.Channel.Online)
+                        if (currentlyLive.Value != c.Channel.Online)
                         {
                             continue;
                         }
                     }
-                    if(hypeZoneChannelId.HasValue)
+                    if (hypeZoneChannelId.HasValue)
                     {
-                        if(hypeZoneChannelId.Value != c.HypeZoneChannelId)
+                        if (hypeZoneChannelId.Value != c.HypeZoneChannelId)
                         {
                             continue;
                         }
                     }
-                    if(!String.IsNullOrWhiteSpace(languageFilter))
+                    if (!string.IsNullOrWhiteSpace(languageFilter))
                     {
-                        if(!c.Channel.Language.Equals(languageFilter, StringComparison.OrdinalIgnoreCase))
+                        if (!c.Channel.Language.Equals(languageFilter, StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
                         }
@@ -367,32 +371,32 @@ namespace MixTok.Core
 
                     // If we got to then end this didn't get filtered.
                     // So add it.
-                    output.Add(c);                    
+                    output.Add(c);
                 }
             }
             return output;
         }
-                     
+
         private void UpdateMixTokRanks()
         {
             // The min age a clip can be.
-            TimeSpan s_minClipAge = new TimeSpan(0, 10, 0);
+            var s_minClipAge = new TimeSpan(0, 10, 0);
 
             // For each clip, update the rank
-            DateTime nowUtc = DateTime.UtcNow;
-            foreach (KeyValuePair<string, MixerClip> p in m_clipMine)
+            DateTimeOffset nowUtc = DateTimeOffset.UtcNow;
+            foreach (KeyValuePair<string, MixerClip> p in _clipMine)
             {
-                MixerClip clip = p.Value;
+                var clip = p.Value;
 
                 // Compute the view rank
-                double viewRank = (double)clip.ViewCount;
+                var viewRank = (double)clip.ViewCount;
 
                 // Decay the view rank by time
-                TimeSpan age = (nowUtc - clip.UploadDate);
+                var age = (nowUtc - clip.UploadDate);
 
                 // Clamp by the min age to give all clips some time
                 // to pick up viewers.
-                if(age < s_minClipAge)
+                if (age < s_minClipAge)
                 {
                     age = s_minClipAge;
                 }
@@ -405,25 +409,25 @@ namespace MixTok.Core
         public int GetClipsCount()
         {
             int result = 0;
-            if(m_clipMineLock.TryEnterReadLock(5))
+            if (_clipMineLock.TryEnterReadLock(5))
             {
-                result = m_clipMine.Count;
-                m_clipMineLock.ExitReadLock();
+                result = _clipMine.Count;
+                _clipMineLock.ExitReadLock();
             }
             return result;
         }
 
         public Tuple<int, int> GetChannelCount()
         {
-            Tuple<int, int> result = new Tuple<int, int>(0,0);
-            if (m_clipMineLock.TryEnterReadLock(5))
+            var result = new Tuple<int, int>(0, 0);
+            if (_clipMineLock.TryEnterReadLock(5))
             {
-                Dictionary<int, bool> channelMap = new Dictionary<int, bool>();
-                foreach (KeyValuePair<string, MixerClip> p in m_clipMine)
+                var channelMap = new ConcurrentDictionary<int, bool>();
+                foreach (KeyValuePair<string, MixerClip> p in _clipMine)
                 {
                     if (!channelMap.ContainsKey(p.Value.Channel.Id))
                     {
-                        channelMap.Add(p.Value.Channel.Id, p.Value.Channel.Online);
+                        channelMap.TryAdd(p.Value.Channel.Id, p.Value.Channel.Online);
                     }
                 }
                 int online = 0;
@@ -436,7 +440,7 @@ namespace MixTok.Core
                 }
                 result = new Tuple<int, int>(channelMap.Count, online);
 
-                m_clipMineLock.ExitReadLock();
+                _clipMineLock.ExitReadLock();
             }
             return result;
         }
@@ -444,60 +448,60 @@ namespace MixTok.Core
         public int ClipsCreatedInLastTime(TimeSpan ts)
         {
             int result = 0;
-            if (m_clipMineLock.TryEnterReadLock(5))
+            if (_clipMineLock.TryEnterReadLock(5))
             {
-                DateTime now = DateTime.UtcNow;
-                foreach (KeyValuePair<string, MixerClip> p in m_clipMine)
+                var now = DateTimeOffset.UtcNow;
+                foreach (KeyValuePair<string, MixerClip> p in _clipMine)
                 {
                     if (now - p.Value.UploadDate < ts)
                     {
                         result++;
                     }
                 }
-                m_clipMineLock.ExitReadLock();
+                _clipMineLock.ExitReadLock();
             }
-            return result;   
+            return result;
         }
 
-        public DateTime GetLastUpdateTime()
+        public DateTimeOffset GetLastUpdateTime()
         {
-            return m_lastUpdateTime;
+            return _lastUpdateTime;
         }
 
         public TimeSpan GetLastUpdateDuration()
         {
-            return m_lastUpdateDuration;
+            return _lastUpdateDuration;
         }
 
-        public DateTime GetLastBackupTime()
+        public DateTimeOffset GetLastBackupTime()
         {
-            return m_lastDatabaseBackup;
+            return _lastDatabaseBackup;
         }
 
         public void SetStatus(string str, TimeSpan? duration = null)
         {
             // Check if we have a lingering message
-            if(!duration.HasValue)
+            if (!duration.HasValue)
             {
-                if((DateTime.Now - m_statusDurationSet) < m_statusDuration)
+                if ((DateTimeOffset.Now - _statusDurationSet) < _statusDuration)
                 {
                     return;
                 }
             }
 
-            m_status = str;
+            _status = str;
 
             // Set the new duration if not.
-            if(duration.HasValue)
+            if (duration.HasValue)
             {
-                m_statusDurationSet = DateTime.Now;
-                m_statusDuration = duration.Value;
+                _statusDurationSet = DateTimeOffset.Now;
+                _statusDuration = duration.Value;
             }
         }
 
         public string GetStatus()
         {
-            return m_status;
+            return _status;
         }
     }
 }

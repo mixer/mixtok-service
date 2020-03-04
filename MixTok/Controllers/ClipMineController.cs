@@ -43,7 +43,7 @@ namespace MixTok.Controllers
             }
 
             // Figure out the sort
-            ClipMineSortTypes sort = ClipMineSortTypes.ViewCount;
+            var sort = ClipMineSortTypes.ViewCount;
             switch (sortType)
             {
                 case 0:

@@ -1,17 +1,17 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using MixTok.Core.Models;
 
 namespace MixTok.Core
 {
     public class ClipCrawler
     {
-        int MinViewerCount = 2;
+        private readonly int _minViewerCount = 2;
 
-        IClipMineAdder m_adder;
-        Thread m_updater;
+        private IClipMineAdder _adder;
+        private Thread _updater;
 
 
         public ClipCrawler(IClipMineAdder adder)
@@ -21,13 +21,13 @@ namespace MixTok.Core
             string var = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
             if(!String.IsNullOrWhiteSpace(var) && var == "Development")
             {
-                MinViewerCount = 500;
+                _minViewerCount = 500;
             }
 
-            m_adder = adder;
-            m_updater = new Thread(UpdateThread);
-            m_updater.Priority = ThreadPriority.BelowNormal;
-            m_updater.Start();
+            _adder = adder;
+            _updater = new Thread(UpdateThread);
+            _updater.Priority = ThreadPriority.BelowNormal;
+            _updater.Start();
         }
 
         private async void UpdateThread()
@@ -37,10 +37,10 @@ namespace MixTok.Core
                 try
                 {
                     // Update
-                    DateTime start = DateTime.Now;
-                    List<MixerClip> clips = await GetTockClips();
+                    var start = DateTimeOffset.Now;
+                    var clips = await GetTockClips();
 
-                    m_adder.AddToClipMine(clips, DateTime.Now - start, false);
+                    _adder.AddToClipMine(clips, DateTimeOffset.Now - start, false);
                 }
                 catch(Exception e)
                 {
@@ -50,11 +50,11 @@ namespace MixTok.Core
 
                 // After we successfully get clips,
                 // update every 5 minutes
-                DateTime nextUpdate = DateTime.Now.AddMinutes(5);
-                while(nextUpdate > DateTime.Now)
+                var nextUpdate = DateTimeOffset.Now.AddMinutes(5);
+                while(nextUpdate > DateTimeOffset.Now)
                 {
                     // Don't set the text if we are showing an error.
-                    Program.s_ClipMine.SetStatus($"Next update in {Util.FormatTime(nextUpdate - DateTime.Now)}");
+                    Program.s_ClipMine.SetStatus($"Next update in {Util.FormatTime(nextUpdate - DateTimeOffset.Now)}");
                     Thread.Sleep(500);
                 }
             }
@@ -63,30 +63,30 @@ namespace MixTok.Core
         private async Task<List<MixerClip>> GetTockClips()
         {
             // Get the online channels
-            DateTime start = DateTime.Now;
+            var start = DateTimeOffset.Now;
 
             Program.s_ClipMine.SetStatus($"Finding online channels...");
 
             // We must limit how many channels we pull, so we will only get channels with at least 2 viewers.
-            List<MixerChannel> channels = await MixerApis.GetOnlineChannels(MinViewerCount, null);
-            Logger.Info($"Found {channels.Count} online channels in {Util.FormatTime(DateTime.Now - start)}");
-            Program.s_ClipMine.SetStatus($"Found {Util.FormatInt(channels.Count)} online channels in {Util.FormatTime(DateTime.Now - start)}", new TimeSpan(0, 0, 10));
+            var channels = await MixerApis.GetOnlineChannels(_minViewerCount, null);
+            Logger.Info($"Found {channels.Count} online channels in {Util.FormatTime(DateTimeOffset.Now - start)}");
+            Program.s_ClipMine.SetStatus($"Found {Util.FormatInt(channels.Count)} online channels in {Util.FormatTime(DateTimeOffset.Now - start)}", new TimeSpan(0, 0, 10));
 
             // Get the clips for the channels
-            List<MixerClip> clips = new List<MixerClip>();
-            start = DateTime.Now;
+            var clips = new List<MixerClip>();
+            start = DateTimeOffset.Now;
             int count = 0;
-            foreach (var chan in channels)
+            foreach (var channel in channels)
             {
                 try
                 {
                     // Get the clips for this channel.
-                    List<MixerClip>  channelClips = await MixerApis.GetClips(chan.Id);
+                    var channelClips = await MixerApis.GetClips(channel.Id);
 
                     // For each clip, attach the most recent channel object.
                     foreach(MixerClip c in channelClips)
                     {
-                        c.Channel = chan;
+                        c.Channel = channel;
                     }
 
                     // Add the clips to our output list.
@@ -94,7 +94,7 @@ namespace MixTok.Core
                 }
                 catch (Exception e)
                 {
-                    Logger.Error("Failed to get clips for channel " + chan.Name, e);
+                    Logger.Error("Failed to get clips for channel " + channel.Name, e);
                 }
                 
                 count++;
@@ -105,8 +105,8 @@ namespace MixTok.Core
                 }
             }
 
-            Logger.Info($"Found {count} clips in {(DateTime.Now - start)}");
-            Program.s_ClipMine.SetStatus($"Found {Util.FormatInt(count)} clips in {Util.FormatTime(DateTime.Now - start)}", new TimeSpan(0, 0, 10));
+            Logger.Info($"Found {count} clips in {(DateTimeOffset.Now - start)}");
+            Program.s_ClipMine.SetStatus($"Found {Util.FormatInt(count)} clips in {Util.FormatTime(DateTimeOffset.Now - start)}", new TimeSpan(0, 0, 10));
 
             return clips;
         }
